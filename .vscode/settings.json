@@ -1,0 +1,20 @@
+{
+  "workbench.colorCustomizations": {
+    "sash.hoverBorder": "#15f6ca",
+    "statusBar.background": "#08d0a9",
+    "statusBar.foreground": "#15202b",
+    "statusBarItem.hoverBackground": "#069f81",
+    "statusBarItem.remoteBackground": "#08d0a9",
+    "statusBarItem.remoteForeground": "#15202b",
+    "activityBar.activeBackground": "#15f6ca",
+    "activityBar.activeBorder": "#dc66f9",
+    "activityBar.background": "#15f6ca",
+    "activityBar.foreground": "#15202b",
+    "activityBar.inactiveForeground": "#15202b99",
+    "activityBarBadge.background": "#dc66f9",
+    "activityBarBadge.foreground": "#15202b"
+  },
+  "peacock.color": "#08d0a9",
+  "rust-analyzer.checkOnSave.command": "clippy"
+  // "rust-analyzer.inlayHints.enable": false
+}
