@@ -58,17 +58,13 @@ pub async fn listen_to_new_heads(url: &str) -> Result<(), reqwest::Error> {
 
     while let Some(chunk) = res.chunk().await? {
         debug!("Received a new head");
-        // println!("Chunk: {:?}", &chunk[10..]);
-        // let r = serde_json::from_slice(&chunk).unwrap();
 
-        // Remove non-json from data
+        // Remove non-json from received data
         let s = str::from_utf8(&chunk[23..]).unwrap();
-        // println!("{:#?}", s);
 
-        let v: serde_json::Value = serde_json::from_str(s).unwrap();
-        // println!("{}", v);
+        let _v: serde_json::Value = serde_json::from_str(s).unwrap();
+        debug!("{}", _v);
 
-        // println!("{}", serde_json::from_slice(&chunk).unwrap())
     }
     Ok(())
 }
