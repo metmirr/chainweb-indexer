@@ -9,6 +9,15 @@ pub struct BlockHeaderItems {
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct NewHead {
+    pub header: BlockHeader,
+    pub pow_hash: String,
+    pub target: String,
+    pub tx_count: u64
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct BlockHeader {
     pub chain_id: u64,
     pub chainweb_version: String,
