@@ -42,43 +42,15 @@ pub async fn api_call_with_retry(
         Ok(req.send().await?)
     })
     .await
-
-    // let client = reqwest::Client::new();
-    // let mut req = match method {
-    //     HttpMethod::GET => client.get(url),
-    //     HttpMethod::POST => client.post(url),
-    // };
-
-    // if let Some(b) = body {
-    //     req = req.body(b);
-    // }
-    // if let Some(h) = headers {
-    //     req = req.headers(h);
-    // }
-    // req.send().await
 }
 
-// pub async fn api_call_with_retry(
-//     method: HttpMethod,
-//     url: String,
-//     body: Option<String>,
-//     headers: Option<HeaderMap>,
-// ) -> Result<reqwest::Response, reqwest::Error> {
-//     retry(ExponentialBackoff::default(), || async {
-//         println!("Fetching {}", url);
-//         Ok(api_call(method, url, body, headers).await?)
-//     })
-//     .await
-// }
-
 pub async fn cut(url: &str) -> Result<CurrentCut, reqwest::Error> {
-    let now = Instant::now();
-    let c = api_call_with_retry(HttpMethod::GET, format!("{}{}", url, "/cut"), None, None)
-        .await
-        .unwrap();
-    let c = c.json().await?;
-    debug!("Took {}ms to fetch cut data", now.elapsed().as_millis());
-    Ok(c)
+    let ccut = retry(ExponentialBackoff::default(), || async {
+        debug!("Fetching current cut");
+        Ok(reqwest::get(url).await?.json::<CurrentCut>().await?)
+    }).await?;
+
+    Ok(ccut)
 }
 
 pub async fn listen_to_new_heads(url: &str) -> Result<(), reqwest::Error> {
