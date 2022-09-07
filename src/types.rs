@@ -13,7 +13,7 @@ pub struct NewHead {
     pub header: BlockHeader,
     pub pow_hash: String,
     pub target: String,
-    pub tx_count: u64
+    pub tx_count: u64,
 }
 
 #[derive(Deserialize, Debug)]

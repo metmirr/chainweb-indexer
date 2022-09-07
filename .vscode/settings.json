@@ -15,6 +15,7 @@
     "activityBarBadge.foreground": "#15202b"
   },
   "peacock.color": "#08d0a9",
-  "rust-analyzer.checkOnSave.command": "clippy"
-  // "rust-analyzer.inlayHints.enable": false
+  "rust-analyzer.checkOnSave.command": "clippy",
+  "editor.tabSize": 4,
+  "editor.formatOnSave": true
 }
