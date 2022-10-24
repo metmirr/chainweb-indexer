@@ -36,19 +36,19 @@ pub fn format_endpoint_with_query_params(params: Option<QueryParams>) -> String 
     let mut lmt = 1;
     if let Some(query_params) = params {
         if let Some(l) = query_params.limit {
-          lmt = l
+            lmt = l
         };
         endpoint.push_str(format!("?limit={}", lmt).as_str());
 
         if let Some(h) = query_params.min_height {
-          endpoint.push_str(format!("&minheight={}", h).as_str());
+            endpoint.push_str(format!("&minheight={}", h).as_str());
         }
         if let Some(h) = query_params.max_height {
-          endpoint.push_str(format!("&maxheight={}", h).as_str());
+            endpoint.push_str(format!("&maxheight={}", h).as_str());
         }
     } else {
         endpoint.push_str(format!("?limit={}", lmt).as_str());
     }
-    
+
     endpoint
 }

@@ -115,7 +115,7 @@ pub struct Clist {
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     pub creation_time: u64,
-    pub ttl: u64,
+    pub ttl: f64,
     pub gas_limit: u64,
     pub chain_id: String,
     pub gas_price: f64,

@@ -1,141 +1,231 @@
-use std::str;
-use std::{collections::HashMap, time::Instant};
-
+use anyhow::Context;
 use backoff::{future::retry, ExponentialBackoff};
-use log::debug;
 
 use crate::{
-    types::{BlockHeaderItems, CurrentCut, NewHead},
-    utils::{format_endpoint_with_query_params, req_header_content_type_with_accept},
-    BlockHeader,
+    types::{
+        BlockHeaderItems, BlockPayload, CurrentCut, Output, Transaction, TransactionWithCmdSigs,
+    },
+    utils::{
+        decode_from_base64_url, format_endpoint_with_query_params,
+        req_header_content_type_with_accept,
+    },
 };
 
+#[derive(Debug, Clone)]
+pub struct Ingest {
+    pub chain_id: u64,
+    pub base_url: String,
+    pub http_client: reqwest::Client,
+    pub cut_url: String,
+    pub qparams: Option<QueryParams>,
+    pub root_url: String,
+    pub start_height: u64,
+    pub next_height: u64,
+}
+
 /// Query paramaters for endpoint
+#[derive(Debug, Clone)]
 pub struct QueryParams {
     pub min_height: Option<u64>,
     pub max_height: Option<u64>,
     pub limit: Option<u16>,
 }
 
-/// Ingest chainweb blocks
-#[derive(Debug)]
-pub struct Ingest {
-    client: reqwest::Client,
-    base_url: String,
-    cut_endpoint: String,
-    headers_endpoints: HashMap<u64, String>,
-    new_headers_endpoint: String,
+#[derive(thiserror::Error, Debug)]
+pub enum ApiFetchResult {
+    #[error("{0}")]
+    Success(String),
+    #[error("{0}")]
+    Failure(#[from] anyhow::Error),
 }
 
 impl Ingest {
-    /// Create a new instance Ingest, based on number of chains it generates full urls
-    /// to fetch data from each chain
-    pub fn new(base_url: String, num_of_chains: u64, params: Option<QueryParams>) -> Self {
-        let endpoint = format_endpoint_with_query_params(params);
-
-        let mut headers_map = HashMap::new();
-        for chain_id in 0..num_of_chains {
-            // Create a full url with base url, chain id and query params
-            headers_map.insert(
-                chain_id,
-                format!("{}/chain/{}{}", base_url, chain_id, endpoint),
-            );
-        }
-
+    pub fn new(
+        chain_id: u64,
+        base_url: String,
+        start_height: u64,
+        params: Option<QueryParams>,
+    ) -> Self {
+        let http_client = reqwest::Client::new();
+        let cut_url = format!("{}/cut", base_url);
+        let root_url = base_url.clone();
+        let base_url = format!(
+            "{}/chain/{}{}",
+            base_url,
+            chain_id,
+            format_endpoint_with_query_params(params.clone())
+        );
         Self {
-            client: reqwest::Client::new(),
-            base_url: base_url.clone(),
-            cut_endpoint: format!("{}/cut", base_url),
-            new_headers_endpoint: format!("{}{}", base_url, "/header/updates"),
-            headers_endpoints: headers_map,
+            chain_id,
+            base_url,
+            http_client,
+            cut_url,
+            qparams: params,
+            root_url,
+            start_height,
+            next_height: start_height,
         }
     }
 
-    /// Fetch the current chain cut
-    pub async fn current_cut(&self) -> Result<CurrentCut, reqwest::Error> {
-        let ccut = retry(ExponentialBackoff::default(), || async {
-            debug!("Fetching current cut");
-            Ok(reqwest::get(&self.cut_endpoint)
-                .await?
-                .json::<CurrentCut>()
-                .await?)
+    pub async fn loop_(&mut self) -> Result<(), anyhow::Error> {
+        let mut i = 0;
+        loop {
+            match self.blocks().await {
+                Ok(_) => {
+                    self.next_height = self.start_height + 1;
+
+                    i += 1;
+                    if i == 10 {
+                        return Ok(());
+                    }
+                }
+                Err(e) => println!("{}", e),
+            }
+        }
+    }
+
+    pub async fn current_cut(&self) -> Result<CurrentCut, ApiFetchResult> {
+        let resp = retry(ExponentialBackoff::default(), || async {
+            let cut = self
+                .http_client
+                .get(&self.cut_url)
+                .send()
+                .await
+                .context("Failed to send a request")?;
+            let status = cut.status().as_u16();
+            if status != 200 {
+                let err = format!("Error! Got status {}", status);
+                Err(backoff::Error::transient(anyhow::anyhow!(err)))
+            } else {
+                // dbg!("Got status {} for chain {}", status, self.chain_id);
+                let cut_as_json: CurrentCut = cut
+                    .json()
+                    .await
+                    .context("Failed to convert response to json.")?;
+                Ok(cut_as_json)
+            }
         })
-        .await?;
+        .await
+        .context("Failed to fetch cut from chainweb node.")
+        .map_err(ApiFetchResult::Failure)?;
 
-        Ok(ccut)
+        Ok(resp)
     }
 
-    /// Listen to new chains heads
-    pub async fn listen_new_heads(&self) -> Result<(), reqwest::Error> {
-        let mut res = reqwest::get(format!("{}{}", self.base_url, "/header/updates")).await?;
+    pub async fn block_headers(&self) -> Result<BlockHeaderItems, ApiFetchResult> {
+        let current_cut = self.current_cut().await?;
+        // Should never panic since we have all available chain ids
+        let hh = current_cut.hashes.get(&self.chain_id).unwrap();
 
-        while let Some(chunk) = res.chunk().await? {
-            // Remove non-json from received data
-            let s = str::from_utf8(&chunk[23..]).unwrap();
+        let resp = retry(ExponentialBackoff::default(), || async {
+            let resp = self
+                .http_client
+                .post(self.base_url.clone())
+                .headers(req_header_content_type_with_accept())
+                .body(format!(
+                    "{{\"upper\": [\"{}\"], \"lower\": []}}",
+                    hh.hash.clone()
+                ))
+                .send()
+                .await
+                .context("Failed to send a request")?;
 
-            let _v: NewHead = serde_json::from_str(s).unwrap();
-            debug!(
-                "Received new head on chain {} at {}",
-                _v.header.chain_id, _v.header.height
+            let status = resp.status().as_u16();
+            if status != 200 {
+                let detail = format!("Error while fetching block headers! Got status {}", status);
+                let err = backoff::Error::transient(anyhow::anyhow!(detail));
+                Err(err)
+            } else {
+                // dbg!("Got status {} for chain {}", status, self.chain_id);
+                let block_headers_json: BlockHeaderItems = resp
+                    .json()
+                    .await
+                    .context("Failed to convert response to json.")?;
+                Ok(block_headers_json)
+            }
+        })
+        .await
+        .context("Failed to fetch block headers from chainweb node.")
+        .map_err(ApiFetchResult::Failure)?;
+
+        Ok(resp)
+    }
+
+    pub async fn blocks(&self) -> Result<(), ApiFetchResult> {
+        let block_headers = self.block_headers().await?;
+        let block_header = &block_headers.items[0];
+
+        let resp = retry(ExponentialBackoff::default(), || async {
+            let url = format!(
+                "{}/chain/{}/payload/{}/outputs",
+                self.root_url, self.chain_id, block_headers.items[0].payload_hash
             );
+            let resp = self
+                .http_client
+                .get(url)
+                .send()
+                .await
+                .context("Failed to send a request")?;
+            let status = resp.status().as_u16();
+            if status != 200 {
+                let detail = format!(
+                    "Error: Failed fetching block headers! Got http status {}",
+                    status
+                );
+                dbg!(&detail);
+                let err = backoff::Error::transient(anyhow::anyhow!(detail));
+                Err(err)
+            } else {
+                // dbg!("Fetched block payload");
+                let block_headers_json = resp
+                    .json::<BlockPayload>()
+                    .await
+                    .context("Failed to convert response to json.")?;
+                Ok(block_headers_json)
+            }
+        })
+        .await
+        .context("Failed to fetch block headers from chainweb node.")
+        .map_err(ApiFetchResult::Failure)?;
 
-            // TODO: push to redis queue
-        }
+        let txs = if let Some(v) = resp.transactions {
+            self.process_block_transactions(v)
+        } else {
+            vec![]
+        };
+        println!(
+            "chain id: {} - block height: {} - txs: {}",
+            self.chain_id,
+            block_header.height,
+            txs.len()
+        );
         Ok(())
     }
 
-    pub async fn blocks_headers(&self) -> Result<Vec<BlockHeader>, reqwest::Error> {
-        let start = Instant::now();
+    fn process_block_transactions(&self, transactions: Vec<Vec<String>>) -> Vec<Transaction> {
+        let mut txs = vec![];
+        for transaction in transactions {
+            let decoded_tx = decode_from_base64_url(&transaction[0]);
+            let decoded_tx_output = decode_from_base64_url(&transaction[1]);
 
-        let current_cut = self.current_cut().await?;
-        let hashes = current_cut.hashes.clone();
-        let mut headers: Vec<BlockHeader> = vec![];
-        let mut handles = vec![];
+            // for debugging purpose to see what goes wrong with the next type conversation
+            let _o: serde_json::Value = serde_json::from_slice(&decoded_tx_output).unwrap();
+            // debug!("{}", _o);
+            let _out: Output = serde_json::from_slice(&decoded_tx_output).unwrap();
 
-        let chain_ids = hashes.keys().copied().collect::<Vec<u64>>();
+            // for debugging purpose to see what goes wrong with the next type conversation
+            let _t: serde_json::Value = serde_json::from_slice(&decoded_tx).unwrap();
+            // debug!("{}", _t);
+            let tx: TransactionWithCmdSigs = serde_json::from_slice(&decoded_tx).unwrap();
 
-        for chain_id in chain_ids {
-            let op = move |url: String, body: String| async {
-                debug!("Fetching header payload");
-                let client = reqwest::Client::new();
-                let result = client
-                    .post(url)
-                    .headers(req_header_content_type_with_accept())
-                    .body(body)
-                    .send()
-                    .await?;
-                Ok(result)
-            };
-
-            let full_url = self.headers_endpoints.get(&chain_id).unwrap().clone();
-            let hash_height = hashes.get(&chain_id).unwrap();
-            let req_body = format!(
-                "{{\"upper\": [\"{}\"], \"lower\": []}}",
-                hash_height.hash.clone()
-            );
-
-            let h = tokio::spawn(async move {
-                retry(ExponentialBackoff::default(), || {
-                    op(full_url.clone(), req_body.clone())
-                })
-                .await
-            });
-            handles.push(h);
+            // debug!("TX: {:?}", tx);
+            // debug!("OUTPUT: {:?}", out);
+            // let tx: TransactionWithCmdSigs = serde_json::from_value(_tx).unwrap();
+            // cmd is string so to make serde works we need to use ::from_str then ::from_value
+            let _cmd: Transaction =
+                serde_json::from_value(serde_json::from_str(&tx.cmd).unwrap()).unwrap();
+            txs.push(_cmd);
         }
-
-        for handle in handles {
-            let mut a: BlockHeaderItems = handle.await.unwrap().unwrap().json().await?;
-            headers.append(&mut a.items);
-        }
-
-        debug!(
-            "Took {}s to fetch {} blocks headers",
-            start.elapsed().as_secs(),
-            headers.len()
-        );
-
-        Ok(headers)
+        txs
     }
-
-    pub async fn blocks(&self) {}
 }

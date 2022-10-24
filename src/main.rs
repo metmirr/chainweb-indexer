@@ -1,32 +1,31 @@
-pub mod fetch_service;
-pub mod types;
-pub mod utils;
-
 use std::time::Instant;
-use log::debug;
-pub use types::{BlockHeader, Transaction};
+
+use chainweb_indexer::ingest::Ingest;
 
 #[tokio::main]
 async fn main() -> Result<(), reqwest::Error> {
-    env_logger::init();
+    let start = Instant::now();
 
-    debug!("Starting");
-
-    let _mainnet = "https://api.chainweb.com/chainweb/0.0/mainnet01";
-    let _testnet = "https://api.testnet.chainweb.com/chainweb/0.0/testnet04";
-
-    let now = Instant::now();
-    let mut i = 0;
-    loop {
-        if i == 5 {
-            break;
-        }
-        let r = fetch_service::blocks(_mainnet).await?;
-        println!("{}", r.len());
-        i += 1;
+    let mut workers = vec![];
+    for i in 0..20 {
+        let worker = tokio::spawn(async move {
+            _ = Ingest::new(
+                i,
+                "https://api.chainweb.com/chainweb/0.0/mainnet01".to_string(),
+                0,
+                None,
+            )
+            .loop_()
+            .await;
+        });
+        workers.push(worker);
     }
-    debug!("Finished in {} seconds", now.elapsed().as_secs());
 
+    for worker in workers {
+        worker.await.unwrap();
+    }
+
+    println!("{}", start.elapsed().as_secs());
 
     Ok(())
 }
