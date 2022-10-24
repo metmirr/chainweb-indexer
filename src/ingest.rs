@@ -81,6 +81,7 @@ impl Ingest {
                 }
                 Err(e) => println!("{}", e),
             }
+            self.listen_to_new_heads().await?;
         }
     }
 
@@ -110,6 +111,32 @@ impl Ingest {
         .map_err(ApiFetchResult::Failure)?;
 
         Ok(resp)
+    }
+
+    pub async fn listen_to_new_heads(&self) -> Result<(), ApiFetchResult> {
+        let url = format!("{}/header/updates", self.root_url);
+        println!("{}", url);
+        let mut res = reqwest::get(url)
+            .await
+            .context("Failed to make request to fetch header updates")
+            .map_err(ApiFetchResult::Failure)?;
+        println!("{}", res.status().as_u16());
+
+        while let Some(chunk) = res
+            .chunk()
+            .await
+            .context("Failed to read response chunk")
+            .map_err(ApiFetchResult::Failure)?
+        {
+            println!("Received a new head");
+
+            // Remove non-json from received data
+            let s = str::from_utf8(&chunk[23..]).unwrap();
+
+            let new_head: NewHead = serde_json::from_str(s).unwrap();
+            println!("{:?}", new_head);
+        }
+        Ok(())
     }
 
     pub async fn block_headers(&self) -> Result<BlockHeaderItems, ApiFetchResult> {
