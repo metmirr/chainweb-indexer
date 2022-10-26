@@ -141,18 +141,19 @@ impl Ingest {
 
     pub async fn block_headers(&self) -> Result<BlockHeaderItems, ApiFetchResult> {
         let current_cut = self.current_cut().await?;
-        // Should never panic since we have all available chain ids
+        // Should never panic because we have all available chain ids
         let hh = current_cut.hashes.get(&self.chain_id).unwrap();
 
+        let body = json!({
+            "upper": [hh.hash],
+            "lower": []
+        });
         let resp = retry(ExponentialBackoff::default(), || async {
             let resp = self
                 .http_client
                 .post(self.base_url.clone())
                 .headers(req_header_content_type_with_accept())
-                .body(format!(
-                    "{{\"upper\": [\"{}\"], \"lower\": []}}",
-                    hh.hash.clone()
-                ))
+                .json(&body)
                 .send()
                 .await
                 .context("Failed to send a request")?;
@@ -182,14 +183,23 @@ impl Ingest {
         let block_headers = self.block_headers().await?;
         let block_header = &block_headers.items[0];
 
+        let payloads_hashes = &block_headers
+            .items
+            .iter()
+            .map(|i| i.payload_hash.clone())
+            .collect::<Vec<String>>();
+        let body = json!(payloads_hashes);
+
         let resp = retry(ExponentialBackoff::default(), || async {
             let url = format!(
-                "{}/chain/{}/payload/{}/outputs",
-                self.root_url, self.chain_id, block_headers.items[0].payload_hash
+                "{}/chain/{}/payload/outputs/batch",
+                self.root_url, self.chain_id
             );
             let resp = self
                 .http_client
-                .get(url)
+                .post(url)
+                .headers(req_header_content_type())
+                .json(&body)
                 .send()
                 .await
                 .context("Failed to send a request")?;
@@ -215,11 +225,12 @@ impl Ingest {
         .context("Failed to fetch block headers from chainweb node.")
         .map_err(ApiFetchResult::Failure)?;
 
-        let txs = if let Some(v) = resp.transactions {
-            self.process_block_transactions(v)
-        } else {
-            vec![]
-        };
+        let mut txs = vec![];
+        for block_payload in resp {
+            if let Some(v) = block_payload.transactions {
+                txs.push(self.process_block_transactions(v))
+            }
+        }
         println!(
             "chain id: {} - block height: {} - txs: {}",
             self.chain_id,
