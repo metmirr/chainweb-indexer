@@ -1,34 +1,56 @@
 use anyhow::Context;
 use backoff::{future::retry, ExponentialBackoff};
+use serde_json::json;
+use std::str;
 
 use crate::{
     types::{
-        BlockHeaderItems, BlockPayload, CurrentCut, Output, Transaction, TransactionWithCmdSigs,
+        BlockHeaderItems, BlockPayload, CurrentCut, HashHeight, NewHead, Output, Transaction,
+        TransactionWithCmdSigs,
     },
     utils::{
-        decode_from_base64_url, format_endpoint_with_query_params,
+        decode_from_base64_url, format_endpoint_with_query_params, req_header_content_type,
         req_header_content_type_with_accept,
     },
 };
 
+///
+/// TODOs:
+/// - Fetch multiple blocks at once
+/// - Use `StateManager` to manage indexer state
+///
+/// New heads should be handled outside of the indexer i.e NewHeadManager
+/// The indexer can fetch new_heads from a queue or a channel and update
+/// chain_head field. chain_head is used by the indexer to determine the
+/// higest block for us for fetching blocks.
+///
 #[derive(Debug, Clone)]
 pub struct Ingest {
     pub chain_id: u64,
     pub base_url: String,
     pub http_client: reqwest::Client,
     pub cut_url: String,
-    pub qparams: Option<QueryParams>,
+    pub qparams: QueryParams,
     pub root_url: String,
-    pub start_height: u64,
-    pub next_height: u64,
+    pub chain_head: HashHeight,
 }
 
 /// Query paramaters for endpoint
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct QueryParams {
-    pub min_height: Option<u64>,
-    pub max_height: Option<u64>,
-    pub limit: Option<u16>,
+    pub min_height: u64,
+    pub max_height: u64,
+    pub limit: u64,
+}
+
+impl QueryParams {
+    pub fn new(limit: u64, min_height: u64) -> Self {
+        Self {
+            limit,
+            min_height,
+            max_height: limit,
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -40,12 +62,7 @@ pub enum ApiFetchResult {
 }
 
 impl Ingest {
-    pub fn new(
-        chain_id: u64,
-        base_url: String,
-        start_height: u64,
-        params: Option<QueryParams>,
-    ) -> Self {
+    pub fn new(chain_id: u64, base_url: String, params: QueryParams) -> Self {
         let http_client = reqwest::Client::new();
         let cut_url = format!("{}/cut", base_url);
         let root_url = base_url.clone();
@@ -53,7 +70,7 @@ impl Ingest {
             "{}/chain/{}{}",
             base_url,
             chain_id,
-            format_endpoint_with_query_params(params.clone())
+            format_endpoint_with_query_params(&params)
         );
         Self {
             chain_id,
@@ -62,26 +79,32 @@ impl Ingest {
             cut_url,
             qparams: params,
             root_url,
-            start_height,
-            next_height: start_height,
+            chain_head: HashHeight {
+                hash: "".to_string(),
+                height: 0,
+            },
         }
     }
 
-    pub async fn loop_(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(&mut self) -> Result<(), anyhow::Error> {
+        let cut = self.current_cut().await?;
+
+        let hh = cut.hashes.get(&self.chain_id).unwrap();
+        self.chain_head = hh.clone();
+        self.qparams.max_height = self.qparams.limit + self.qparams.min_height;
+
         let mut i = 0;
         loop {
             match self.blocks().await {
                 Ok(_) => {
-                    self.next_height = self.start_height + 1;
-
+                    self.qparams.min_height += self.qparams.limit;
                     i += 1;
-                    if i == 10 {
+                    if i == 1 {
                         return Ok(());
                     }
                 }
                 Err(e) => println!("{}", e),
             }
-            self.listen_to_new_heads().await?;
         }
     }
 
@@ -113,14 +136,13 @@ impl Ingest {
         Ok(resp)
     }
 
-    pub async fn listen_to_new_heads(&self) -> Result<(), ApiFetchResult> {
+    pub async fn listen_to_new_heads(&mut self) -> Result<(), ApiFetchResult> {
         let url = format!("{}/header/updates", self.root_url);
-        println!("{}", url);
         let mut res = reqwest::get(url)
             .await
             .context("Failed to make request to fetch header updates")
             .map_err(ApiFetchResult::Failure)?;
-        println!("{}", res.status().as_u16());
+        dbg!("{}", res.status().as_u16());
 
         while let Some(chunk) = res
             .chunk()
@@ -133,25 +155,32 @@ impl Ingest {
             // Remove non-json from received data
             let s = str::from_utf8(&chunk[23..]).unwrap();
 
-            let new_head: NewHead = serde_json::from_str(s).unwrap();
-            println!("{:?}", new_head);
+            let _new_head: NewHead = serde_json::from_str(s).unwrap();
         }
         Ok(())
     }
 
-    pub async fn block_headers(&self) -> Result<BlockHeaderItems, ApiFetchResult> {
-        let current_cut = self.current_cut().await?;
+    pub async fn blocks_headers(&self) -> Result<BlockHeaderItems, ApiFetchResult> {
+        // let current_cut = self.current_cut().await?;
         // Should never panic because we have all available chain ids
-        let hh = current_cut.hashes.get(&self.chain_id).unwrap();
+        // let hh = current_cut.hashes.get(&self.chain_id).unwrap();
 
         let body = json!({
-            "upper": [hh.hash],
+            "upper": [self.chain_head.hash],
             "lower": []
         });
+
+        let url = format!(
+            "{}/chain/{}{}",
+            self.root_url,
+            self.chain_id,
+            format_endpoint_with_query_params(&self.qparams)
+        );
+        // println!("{}", url);
         let resp = retry(ExponentialBackoff::default(), || async {
             let resp = self
                 .http_client
-                .post(self.base_url.clone())
+                .post(url.clone())
                 .headers(req_header_content_type_with_accept())
                 .json(&body)
                 .send()
@@ -179,18 +208,21 @@ impl Ingest {
         Ok(resp)
     }
 
-    pub async fn blocks(&self) -> Result<(), ApiFetchResult> {
-        let block_headers = self.block_headers().await?;
-        let block_header = &block_headers.items[0];
+    pub async fn blocks(&mut self) -> Result<(), ApiFetchResult> {
+        let blocks_headers = self.blocks_headers().await?;
+        println!("Block headers len: {}", blocks_headers.items.len());
 
-        let payloads_hashes = &block_headers
+        // headers are ordered by descending
+        self.qparams.max_height = self.qparams.limit + blocks_headers.items[0].height;
+
+        let payloads_hashes = &blocks_headers
             .items
             .iter()
             .map(|i| i.payload_hash.clone())
             .collect::<Vec<String>>();
         let body = json!(payloads_hashes);
 
-        let resp = retry(ExponentialBackoff::default(), || async {
+        let blocks_payloads = retry(ExponentialBackoff::default(), || async {
             let url = format!(
                 "{}/chain/{}/payload/outputs/batch",
                 self.root_url, self.chain_id
@@ -213,9 +245,8 @@ impl Ingest {
                 let err = backoff::Error::transient(anyhow::anyhow!(detail));
                 Err(err)
             } else {
-                // dbg!("Fetched block payload");
                 let block_headers_json = resp
-                    .json::<BlockPayload>()
+                    .json::<Vec<BlockPayload>>()
                     .await
                     .context("Failed to convert response to json.")?;
                 Ok(block_headers_json)
@@ -226,17 +257,11 @@ impl Ingest {
         .map_err(ApiFetchResult::Failure)?;
 
         let mut txs = vec![];
-        for block_payload in resp {
+        for block_payload in blocks_payloads {
             if let Some(v) = block_payload.transactions {
                 txs.push(self.process_block_transactions(v))
             }
         }
-        println!(
-            "chain id: {} - block height: {} - txs: {}",
-            self.chain_id,
-            block_header.height,
-            txs.len()
-        );
         Ok(())
     }
 
