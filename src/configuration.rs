@@ -14,7 +14,7 @@ pub struct ApplicationSettings {
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub chain_fork_height: u64,
     #[serde(deserialize_with = "deserialize_number_from_string")]
-    pub number_of_chains: u16,
+    pub number_of_chains: i16,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub limit: u64,
     #[serde(deserialize_with = "deserialize_number_from_string")]

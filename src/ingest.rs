@@ -26,7 +26,7 @@ use crate::utils::{
 ///
 #[derive(Debug, Clone)]
 pub struct Ingest {
-    pub chain_id: u16,
+    pub chain_id: i16,
     pub base_url: String,
     pub http_client: reqwest::Client,
     pub cut_url: String,
@@ -63,7 +63,7 @@ pub enum ApiFetchResult {
 }
 
 impl Ingest {
-    pub fn new(chain_id: u16, base_url: String, params: QueryParams, pool: PgPool) -> Self {
+    pub fn new(chain_id: i16, base_url: String, params: QueryParams, pool: PgPool) -> Self {
         let http_client = reqwest::Client::new();
         let cut_url = format!("{}/cut", base_url);
         let root_url = base_url.clone();
@@ -89,6 +89,11 @@ impl Ingest {
     }
 
     pub async fn start(&mut self) -> Result<(), anyhow::Error> {
+        println!(
+            "starting indexer # {} at # {}",
+            self.chain_id, self.qparams.min_height
+        );
+
         let cut = self.current_cut().await?;
 
         let hh = cut.hashes.get(&self.chain_id).unwrap();
@@ -265,7 +270,7 @@ impl Ingest {
             }
         }
 
-        for item in blocks_headers.items {
+        for item in &blocks_headers.items {
             let block = Block::new(item.chain_id, item.height);
             block
                 .insert(&self.pool)
@@ -273,6 +278,14 @@ impl Ingest {
                 .context("Failed to insert block to database")
                 .map_err(ApiFetchResult::Failure)?;
         }
+
+        // Update processed log table
+        let last_block = blocks_headers.items.first().unwrap();
+        Block::new(last_block.chain_id, last_block.height)
+            .insert_as_last_processed_block(&self.pool)
+            .await
+            .context("Failed to insert last processed block in database")
+            .map_err(ApiFetchResult::Failure)?;
 
         Ok(())
     }

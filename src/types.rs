@@ -42,7 +42,7 @@ pub struct HashHeight {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct CurrentCut {
-    pub hashes: HashMap<u16, HashHeight>,
+    pub hashes: HashMap<i16, HashHeight>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
