@@ -19,7 +19,7 @@ pub struct NewHead {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockHeader {
-    pub chain_id: u64,
+    pub chain_id: u16,
     pub chainweb_version: String,
     pub creation_time: u64,
     pub epoch_start: u64,
@@ -42,7 +42,7 @@ pub struct HashHeight {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct CurrentCut {
-    pub hashes: HashMap<u64, HashHeight>,
+    pub hashes: HashMap<u16, HashHeight>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

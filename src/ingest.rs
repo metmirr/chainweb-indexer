@@ -1,17 +1,17 @@
 use anyhow::Context;
 use backoff::{future::retry, ExponentialBackoff};
 use serde_json::json;
+use sqlx::PgPool;
 use std::str;
 
-use crate::{
-    types::{
-        BlockHeaderItems, BlockPayload, CurrentCut, HashHeight, NewHead, Output, Transaction,
-        TransactionWithCmdSigs,
-    },
-    utils::{
-        decode_from_base64_url, format_endpoint_with_query_params, req_header_content_type,
-        req_header_content_type_with_accept,
-    },
+use crate::entities::Block;
+use crate::types::{
+    BlockHeaderItems, BlockPayload, CurrentCut, HashHeight, NewHead, Output, Transaction,
+    TransactionWithCmdSigs,
+};
+use crate::utils::{
+    decode_from_base64_url, format_endpoint_with_query_params, req_header_content_type,
+    req_header_content_type_with_accept,
 };
 
 ///
@@ -26,13 +26,14 @@ use crate::{
 ///
 #[derive(Debug, Clone)]
 pub struct Ingest {
-    pub chain_id: u64,
+    pub chain_id: u16,
     pub base_url: String,
     pub http_client: reqwest::Client,
     pub cut_url: String,
     pub qparams: QueryParams,
     pub root_url: String,
     pub chain_head: HashHeight,
+    pub pool: PgPool,
 }
 
 /// Query paramaters for endpoint
@@ -62,7 +63,7 @@ pub enum ApiFetchResult {
 }
 
 impl Ingest {
-    pub fn new(chain_id: u64, base_url: String, params: QueryParams) -> Self {
+    pub fn new(chain_id: u16, base_url: String, params: QueryParams, pool: PgPool) -> Self {
         let http_client = reqwest::Client::new();
         let cut_url = format!("{}/cut", base_url);
         let root_url = base_url.clone();
@@ -83,6 +84,7 @@ impl Ingest {
                 hash: "".to_string(),
                 height: 0,
             },
+            pool,
         }
     }
 
@@ -262,6 +264,16 @@ impl Ingest {
                 txs.push(self.process_block_transactions(v))
             }
         }
+
+        for item in blocks_headers.items {
+            let block = Block::new(item.chain_id, item.height);
+            block
+                .insert(&self.pool)
+                .await
+                .context("Failed to insert block to database")
+                .map_err(ApiFetchResult::Failure)?;
+        }
+
         Ok(())
     }
 

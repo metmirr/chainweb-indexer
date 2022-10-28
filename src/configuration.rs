@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_number_from_string;
+use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
 #[derive(Deserialize, Clone)]
 pub struct Settings {
     pub application: ApplicationSettings,
+    pub database: DatabaseSettings,
 }
 
 #[derive(Deserialize, Clone)]
@@ -12,13 +14,44 @@ pub struct ApplicationSettings {
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub chain_fork_height: u64,
     #[serde(deserialize_with = "deserialize_number_from_string")]
-    pub number_of_chains: u64,
+    pub number_of_chains: u16,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub limit: u64,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub min_height: u64,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub max_height: u64,
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub struct DatabaseSettings {
+    pub username: String,
+    pub password: String,
+    pub host: String,
+    #[serde(deserialize_with = "deserialize_number_from_string")]
+    pub port: u16,
+    pub database_name: String,
+    pub require_ssl: bool,
+}
+
+impl DatabaseSettings {
+    pub fn without_db(&self) -> PgConnectOptions {
+        let ssl_mode = if self.require_ssl {
+            PgSslMode::Require
+        } else {
+            PgSslMode::Prefer
+        };
+        PgConnectOptions::new()
+            .host(&self.host)
+            .username(&self.username)
+            .password(&self.password)
+            .port(self.port)
+            .ssl_mode(ssl_mode)
+    }
+
+    pub fn with_db(&self) -> PgConnectOptions {
+        self.without_db().database(&self.database_name)
+    }
 }
 
 pub fn get_configuration() -> Result<Settings, config::ConfigError> {
