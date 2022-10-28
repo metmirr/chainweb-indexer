@@ -1,0 +1,8 @@
+application:
+  number_of_chains: 20
+  chain_fork_height: 852054
+  host: 'https://api.chainweb.com/chainweb/0.0/mainnet01'
+  # pagination
+  limit: 20
+  max_height: 20
+  min_height: 0
