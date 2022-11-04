@@ -100,15 +100,10 @@ impl Ingest {
         self.chain_head = hh.clone();
         self.qparams.max_height = self.qparams.limit + self.qparams.min_height;
 
-        let mut i = 0;
         loop {
             match self.blocks().await {
                 Ok(_) => {
                     self.qparams.min_height += self.qparams.limit;
-                    i += 1;
-                    if i == 1 {
-                        return Ok(());
-                    }
                 }
                 Err(e) => println!("{}", e),
             }
@@ -196,7 +191,10 @@ impl Ingest {
 
             let status = resp.status().as_u16();
             if status != 200 {
-                let detail = format!("Error while fetching block headers! Got status {}", status);
+                let detail = format!(
+                    "Error while fetching block headers for chain: {}! Got status {}",
+                    self.chain_id, status
+                );
                 let err = backoff::Error::transient(anyhow::anyhow!(detail));
                 Err(err)
             } else {
@@ -217,7 +215,7 @@ impl Ingest {
 
     pub async fn blocks(&mut self) -> Result<(), ApiFetchResult> {
         let blocks_headers = self.blocks_headers().await?;
-        println!("Block headers len: {}", blocks_headers.items.len());
+        // println!("Block headers len: {}", blocks_headers.items.len());
 
         // headers are ordered by descending
         self.qparams.max_height = self.qparams.limit + blocks_headers.items[0].height;
@@ -245,10 +243,10 @@ impl Ingest {
             let status = resp.status().as_u16();
             if status != 200 {
                 let detail = format!(
-                    "Error: Failed fetching block headers! Got http status {}",
-                    status
+                    "Error: Failed fetching blocks payloads {}! Got http status {}",
+                    self.chain_id, status
                 );
-                dbg!(&detail);
+                println!("{}", &detail);
                 let err = backoff::Error::transient(anyhow::anyhow!(detail));
                 Err(err)
             } else {
