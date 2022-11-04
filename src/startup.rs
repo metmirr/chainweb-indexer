@@ -5,10 +5,12 @@ use crate::configuration::{DatabaseSettings, Settings};
 use crate::entities::Block;
 use crate::ingest::{Ingest, QueryParams};
 
-pub struct Application;
+pub struct Application {
+    indexers: Vec<Ingest>,
+}
 
 impl Application {
-    pub async fn build(configuration: Settings) -> Result<(), anyhow::Error> {
+    pub async fn build(configuration: Settings) -> Result<Application, anyhow::Error> {
         let number_of_worker =
             if configuration.application.max_height > configuration.application.chain_fork_height {
                 configuration.application.number_of_chains
@@ -18,7 +20,7 @@ impl Application {
         let db_pool = get_connection_pool(&configuration.database);
         let processed_blocks = get_processed_blocks_logs(&db_pool).await?;
 
-        let mut workers = vec![];
+        let mut indexers = vec![];
 
         for chain_id in 0..number_of_worker {
             let c = configuration.clone();
@@ -32,17 +34,24 @@ impl Application {
             let query_params = QueryParams::new(c.application.limit, min_height);
             let pool = db_pool.clone();
 
-            let worker = tokio::spawn(async move {
-                let url = c.application.host.clone();
-                let mut ingest = Ingest::new(chain_id, url, query_params.clone(), pool);
-                _ = ingest.start().await;
-            });
-            workers.push(worker);
+            let url = c.application.host.clone();
+            indexers.push(Ingest::new(chain_id, url, query_params.clone(), pool));
         }
 
-        for worker in workers {
-            worker.await.unwrap();
+        Ok(Self { indexers })
+    }
+
+    pub async fn run_indexers(self) -> Result<(), anyhow::Error> {
+        let mut workers = vec![];
+        for mut indexer in self.indexers {
+            workers.push(tokio::spawn(async move {
+                indexer.start().await.unwrap();
+            }));
         }
+        for worker in workers {
+            worker.await?;
+        }
+
         Ok(())
     }
 }
