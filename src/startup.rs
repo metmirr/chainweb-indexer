@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use crate::configuration::{DatabaseSettings, Settings};
+use crate::configuration::{ApplicationSettings, DatabaseSettings, Settings};
 use crate::entities::Block;
 use crate::ingest::{Ingest, QueryParams};
 
@@ -11,27 +13,17 @@ pub struct Application {
 
 impl Application {
     pub async fn build(configuration: Settings) -> Result<Application, anyhow::Error> {
-        let number_of_worker =
-            if configuration.application.max_height > configuration.application.chain_fork_height {
-                configuration.application.number_of_chains
-            } else {
-                10
-            };
         let db_pool = get_connection_pool(&configuration.database);
         let processed_blocks = get_processed_blocks_logs(&db_pool).await?;
 
         let mut indexers = vec![];
+        let chains_blocks_map =
+            get_min_height_for_chains(&processed_blocks, &configuration.application);
 
-        for chain_id in 0..number_of_worker {
+        for chain_id in 0..configuration.application.number_of_chains {
             let c = configuration.clone();
-            let min_height = match processed_blocks.iter().find(|b| b.chain_id == chain_id) {
-                Some(v) => {
-                    let next_height = v.height + 1;
-                    next_height as u64
-                }
-                None => c.application.min_height,
-            };
-            let query_params = QueryParams::new(c.application.limit, min_height);
+            let mm = chains_blocks_map.get(&chain_id).unwrap();
+            let query_params = QueryParams::new(c.application.limit, *mm);
             let pool = db_pool.clone();
 
             let url = c.application.host.clone();
@@ -75,9 +67,31 @@ pub async fn get_processed_blocks_logs(pool: &PgPool) -> Result<Vec<Block>, sqlx
     Ok(blocks)
 }
 
-pub fn get_min_height_for_chain(chain_id: i16, blocks: &[Block]) -> u64 {
-    match blocks.iter().find(|b| b.chain_id == chain_id) {
-        Some(v) => v.height as u64,
-        None => 0,
+fn get_min_height_for_chains(
+    processed_blocks: &[Block],
+    settings: &ApplicationSettings,
+) -> HashMap<i16, u64> {
+    let mut chains_blocks_map: HashMap<i16, u64> = HashMap::new();
+    let min_height = settings.min_height;
+    // Min height for chains gt>9
+    let min_height2 = settings.chain_fork_height;
+
+    for chain_id in 0..settings.number_of_chains {
+        match processed_blocks.iter().find(|b| b.chain_id == chain_id) {
+            Some(v) => {
+                let next_height = v.height + 1;
+                chains_blocks_map.insert(chain_id, next_height as u64);
+                // next_height as u64
+            }
+            None => {
+                let m = if chain_id > 9 && min_height < min_height2 {
+                    min_height2
+                } else {
+                    min_height
+                };
+                chains_blocks_map.insert(chain_id, m);
+            }
+        }
     }
+    chains_blocks_map
 }
